@@ -1,149 +1,132 @@
 import torch
+import math
 
 class STATensor:
     """
-    Tensor Base para Álgebra de Espacio-Tiempo Cl(1,3).
-    Mapeo de los 16 grados de libertad (Firma de Hestenes: +, -, -, -):
-    [0]     : Escalar
-    [1-4]   : Vectores (g0, g1, g2, g3)
-    [5-10]  : Bivectores (Álgebra de Pauli / Faraday)
-    [11-14] : Trivectores (Pseudo-vectores)
-    [15]    : Pseudoescalar (I)
+    Motor Base para Álgebra de Espacio-Tiempo Cl(1,3).
+    Evaluación paralelizada en GPU mediante isomorfismo binario de Grassmann.
+    Firma Métrica: (+, -, -, -)
     """
     def __init__(self, data, device=None):
-        # 1. Anclaje de Hardware Automático
         if device is None:
             self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         else:
             self.device = device
 
-        # 2. Ingesta y Estandarización del Tensor
         if not isinstance(data, torch.Tensor):
             data = torch.tensor(data, dtype=torch.float32, device=self.device)
         else:
             data = data.to(self.device, dtype=torch.float32)
         
-        # Forzar estructura batched: [N, 16] o [16] -> [1, 16]
         if data.dim() == 1:
             data = data.unsqueeze(0)
             
         if data.shape[-1] != 16:
-            raise ValueError(f"Violación topológica: Un multivector Cl(1,3) requiere 16 dimensiones. Recibido: {data.shape}")
+            raise ValueError(f"Dimensión inválida. Se requieren 16 grados de libertad. Recibido: {data.shape}")
             
         self.data = data
         
-        # 3. Caché del Tensor Multiplicativo (Tabla de Cayley 16x16x16)
-        # Se aloja en VRAM estáticamente para que todas las instancias compartan el mismo mapa
+        # Inyección de la Métrica en Caché VRAM
         if not hasattr(STATensor, '_cayley_table'):
             STATensor._cayley_table = self._build_cayley_tensor().to(self.device)
+            
+        # Máscara estática de reversión espacial (~)
+        if not hasattr(STATensor, '_reverse_mask'):
+            # Grados: [0, 1, 1, 2, 1, 2, 2, 3, 1, 2, 2, 3, 2, 3, 3, 4]
+            # La reversión cambia el signo a los grados 2 y 3.
+            mask = [1, 1, 1, -1, 1, -1, -1, -1, 1, -1, -1, -1, -1, -1, -1, 1]
+            STATensor._reverse_mask = torch.tensor(mask, dtype=torch.float32, device=self.device)
 
     @classmethod
     def _build_cayley_tensor(cls):
-        """
-        Construye automáticamente la Tabla de Cayley [16, 16, 16] para Cl(1,3)
-        utilizando manipulación de bits (Grassmann-Cayley algebra mapping).
-        """
-        # Tensor 16x16x16 inicializado en ceros
+        """ Construcción algorítmica de la tabla geométrica usando reglas XOR de Grassmann. """
         T = torch.zeros((16, 16, 16), dtype=torch.float32)
+        metric = [1, -1, -1, -1] # Firma de Hestenes
         
-        # Firma métrica de Hestenes (+, -, -, -)
-        # Bit 0 (gamma_0) -> +1
-        # Bit 1 (gamma_1) -> -1
-        # Bit 2 (gamma_2) -> -1
-        # Bit 3 (gamma_3) -> -1
-        metric = [1, -1, -1, -1]
-        
-        # Iterar sobre las 16 bases de i y las 16 bases de j
         for i in range(16):
             for j in range(16):
-                # 1. El índice resultante es el XOR de los bits base
                 k = i ^ j
-                
                 sign = 1
-                
-                # 2. Métrica (Aniquilación de cuadrados)
-                # Encontramos los vectores que chocan consigo mismos (overlap)
                 overlap = i & j
                 for bit in range(4):
                     if overlap & (1 << bit):
                         sign *= metric[bit]
-                        
-                # 3. Anti-conmutatividad (Permutaciones espaciales)
-                # Contamos cuántos saltos debe dar cada vector en 'j' para pasar a 
-                # través de los vectores de 'i' hasta su posición lexicográfica correcta.
                 swaps = 0
                 for bit_j in range(4):
                     if j & (1 << bit_j):
-                        # Revisar bits en 'i' que estén a la izquierda (mayor peso)
                         for bit_i in range(bit_j + 1, 4):
                             if i & (1 << bit_i):
                                 swaps += 1
-                                
                 if swaps % 2 != 0:
                     sign *= -1
-                    
-                # 4. Inyectar el escalar resultante en la coordenada del hipercubo
                 T[i, j, k] = float(sign)
-                
         return T
+
+    # ==========================================
+    # CONSTRUCTORES FÍSICOS (Factory Methods)
+    # ==========================================
+
+    @classmethod
+    def escalar(cls, valor, batch_size=1, device=None):
+        data = torch.zeros((batch_size, 16), dtype=torch.float32, device=device)
+        data[:, 0] = torch.as_tensor(valor, dtype=torch.float32)
+        return cls(data, device=device)
 
     @classmethod
     def vector(cls, t, x, y, z, device=None):
-        """
-        Crea un Cuadrivector espacio-temporal: V = t*g0 + x*g1 + y*g2 + z*g3.
-        Índices de Grassmann: g0=1 (2^0), g1=2 (2^1), g2=4 (2^2), g3=8 (2^3).
-        """
-        t = torch.as_tensor(t, dtype=torch.float32)
-        x = torch.as_tensor(x, dtype=torch.float32)
-        y = torch.as_tensor(y, dtype=torch.float32)
-        z = torch.as_tensor(z, dtype=torch.float32)
-        
+        """ Cuadrivector espacio-temporal (t, x, y, z) """
+        t, x = torch.as_tensor(t, dtype=torch.float32), torch.as_tensor(x, dtype=torch.float32)
+        y, z = torch.as_tensor(y, dtype=torch.float32), torch.as_tensor(z, dtype=torch.float32)
         batch_size = max(t.numel(), x.numel(), y.numel(), z.numel())
-        data = torch.zeros((batch_size, 16), dtype=torch.float32, device=device)
         
-        data[:, 1] = t  # gamma_0
-        data[:, 2] = x  # gamma_1
-        data[:, 4] = y  # gamma_2
-        data[:, 8] = z  # gamma_3
+        data = torch.zeros((batch_size, 16), dtype=torch.float32, device=device)
+        data[:, 1], data[:, 2], data[:, 4], data[:, 8] = t, x, y, z
         return cls(data, device=device)
 
     @classmethod
-    def bivector_pauli(cls, bx, by, bz, device=None):
-        """
-        Crea un Bivector Espacial Puro (Álgebra de Pauli 3D / Campo Magnético).
-        Índices de Grassmann (XOR): 
-        g1^g2 = 2 XOR 4 = 6
-        g2^g3 = 4 XOR 8 = 12
-        g3^g1 = 8 XOR 2 = 10
-        """
-        bx = torch.as_tensor(bx, dtype=torch.float32)
-        by = torch.as_tensor(by, dtype=torch.float32)
-        bz = torch.as_tensor(bz, dtype=torch.float32)
+    def bivector(cls, ex, ey, ez, bx, by, bz, device=None):
+        """ Tensor de Faraday unificado. E: Boosts espacio-temporales. B: Campos espaciales. """
+        ex, ey, ez = torch.as_tensor(ex), torch.as_tensor(ey), torch.as_tensor(ez)
+        bx, by, bz = torch.as_tensor(bx), torch.as_tensor(by), torch.as_tensor(bz)
+        batch_size = max(ex.numel(), bx.numel())
         
-        batch_size = max(bx.numel(), by.numel(), bz.numel())
         data = torch.zeros((batch_size, 16), dtype=torch.float32, device=device)
-        
-        data[:, 6] = bx   # g1^g2
-        data[:, 12] = by  # g2^g3
-        data[:, 10] = bz  # g3^g1
+        # Bivectores de Boost (Espacio-Temporales): g0g1=3, g0g2=5, g0g3=9
+        data[:, 3], data[:, 5], data[:, 9] = ex, ey, ez
+        # Bivectores de Pauli (Espaciales): g1g2=6, g3g1=10, g2g3=12
+        data[:, 6], data[:, 10], data[:, 12] = bx, bz, by
         return cls(data, device=device)
 
+    @classmethod
+    def trivector(cls, tx, ty, tz, t_xyz, device=None):
+        """ Pseudo-vectores cuánticos """
+        tx, ty, tz = torch.as_tensor(tx), torch.as_tensor(ty), torch.as_tensor(tz)
+        t_xyz = torch.as_tensor(t_xyz)
+        batch_size = max(tx.numel(), t_xyz.numel())
+        
+        data = torch.zeros((batch_size, 16), dtype=torch.float32, device=device)
+        data[:, 7], data[:, 11], data[:, 13], data[:, 14] = tx, ty, tz, t_xyz
+        return cls(data, device=device)
+
+    @classmethod
+    def pseudoescalar(cls, I, batch_size=1, device=None):
+        """ Volumen Fundamental de 4 Dimensiones """
+        data = torch.zeros((batch_size, 16), dtype=torch.float32, device=device)
+        data[:, 15] = torch.as_tensor(I, dtype=torch.float32)
+        return cls(data, device=device)
+
+    # ==========================================
+    # ÁLGEBRA GEOMÉTRICA (Operadores Centrales)
+    # ==========================================
+
     def __mul__(self, other):
-        """
-        Sobrescribe el operador (*) para ejecutar el Producto Geométrico.
-        Esta es la línea más importante de toda la librería.
-        """
+        """ Producto Geométrico Paralelizado (AB = A.B + A^B) """
         if isinstance(other, STATensor):
-            # Contracción tensorial masiva en GPU: 
-            # 'bi' (Batch 1, 16D) * 'bj' (Batch 2, 16D) mapeado por 'ijk' (Reglas Cl1,3) -> 'bk' (Resultado)
-            res_data = torch.einsum('bi, bj, ijk -> bk', self.data, other.data, self._cayley_table)
-            return STATensor(res_data, device=self.device)
-            
-        elif isinstance(other, (int, float)): 
-            # Producto escalar estándar
+            res = torch.einsum('bi, bj, ijk -> bk', self.data, other.data, self._cayley_table)
+            return STATensor(res, device=self.device)
+        elif isinstance(other, (int, float, torch.Tensor)): 
             return STATensor(self.data * other, device=self.device)
-            
-        raise TypeError(f"El producto geométrico no soporta el tipo {type(other)}")
+        raise TypeError("Tipo no soportado para producto geométrico.")
         
     def __rmul__(self, other):
         return self.__mul__(other)
@@ -152,6 +135,93 @@ class STATensor:
         if isinstance(other, STATensor):
             return STATensor(self.data + other.data, device=self.device)
         return STATensor(self.data + other, device=self.device)
+
+    def __sub__(self, other):
+        if isinstance(other, STATensor):
+            return STATensor(self.data - other.data, device=self.device)
+        return STATensor(self.data - other, device=self.device)
+
+    def __invert__(self):
+        """ Reversión Espacial (~A): Aísla e invierte bivectores y trivectores. """
+        return STATensor(self.data * self._reverse_mask, device=self.device)
+
+    # ==========================================
+    # PROYECCIONES DE GRADO
+    # ==========================================
+
+    def dot(self, other):
+        """ Producto Interior: <AB>_0 para vectores, o contracción de menor grado general. """
+        res = self * other
+        return res.grade_project(0)
+
+    def wedge(self, other):
+        """ Producto Exterior (A^B): Captura áreas, volúmenes e hipervolúmenes. """
+        # Para dos cuadrivectores A y B, A^B = 0.5 * (AB - BA)
+        return (self * other - other * self) * 0.5
+
+    def grade_project(self, grade):
+        """ Aísla un grado geométrico específico (0 a 4) """
+        mask = torch.zeros(16, dtype=torch.float32, device=self.device)
+        if grade == 0: mask[0] = 1.0
+        elif grade == 1: mask[[1, 2, 4, 8]] = 1.0
+        elif grade == 2: mask[[3, 5, 6, 9, 10, 12]] = 1.0
+        elif grade == 3: mask[[7, 11, 13, 14]] = 1.0
+        elif grade == 4: mask[15] = 1.0
+        
+        return STATensor(self.data * mask, device=self.device)
+
+    # ==========================================
+    # DINÁMICA Y CÁLCULO
+    # ==========================================
+
+    def exp(self, order=12):
+        """ 
+        Exponenciación Tensorial por Serie de Taylor. 
+        Calcula R = e^{B/2} sin divergencia condicional en GPU.
+        Soporta bivectores simples, generales y campos nulos.
+        """
+        batch_size = self.data.shape[0]
+        res = STATensor.escalar(1.0, batch_size=batch_size, device=self.device)
+        term = STATensor.escalar(1.0, batch_size=batch_size, device=self.device)
+        
+        for i in range(1, order + 1):
+            term = term * self * (1.0 / i)
+            res = res + term
+        return res
+
+    @staticmethod
+    def nabla(F, coords):
+        """
+        Derivada Topológica Espacio-Temporal (nabla F).
+        Utiliza el grafo computacional de PyTorch para calcular derivadas de campo exactas.
+        F: Campo Tensor Evaluado (STATensor)
+        coords: Cuadrivector de Coordenadas [t, x, y, z] con requires_grad=True
+        """
+        assert coords.requires_grad, "Las coordenadas deben tener requires_grad=True"
+        
+        # Calcular los gradientes para cada uno de los 16 grados de libertad del campo F
+        # respecto a las coordenadas (t, x, y, z)
+        jacobiano = torch.zeros((*F.data.shape, 4), device=F.device)
+        
+        for k in range(16):
+            grad_k = torch.autograd.grad(outputs=F.data[:, k].sum(), inputs=coords, 
+                                         create_graph=True, retain_graph=True)[0]
+            jacobiano[:, k, :] = grad_k
+            
+        # Vectores contravariantes de la base recíproca (gamma^0, gamma^1, gamma^2, gamma^3)
+        # En Cl(1,3): g^0 = g_0, g^1 = -g_1, g^2 = -g_2, g^3 = -g_3
+        g_0 = STATensor.vector(1, 0, 0, 0, device=F.device)
+        g_1 = STATensor.vector(0, -1, 0, 0, device=F.device)
+        g_2 = STATensor.vector(0, 0, -1, 0, device=F.device)
+        g_3 = STATensor.vector(0, 0, 0, -1, device=F.device)
+        
+        # dF/dt * gamma^0 + dF/dx * gamma^1 + dF/dy * gamma^2 + dF/dz * gamma^3
+        dF_dt = STATensor(jacobiano[:, :, 0], device=F.device)
+        dF_dx = STATensor(jacobiano[:, :, 1], device=F.device)
+        dF_dy = STATensor(jacobiano[:, :, 2], device=F.device)
+        dF_dz = STATensor(jacobiano[:, :, 3], device=F.device)
+        
+        return g_0 * dF_dt + g_1 * dF_dx + g_2 * dF_dy + g_3 * dF_dz
 
     def __repr__(self):
         return f"STATensor(batch_size={self.data.shape[0]}, device={self.device})"
