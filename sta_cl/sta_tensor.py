@@ -40,18 +40,52 @@ class STATensor:
     @classmethod
     def _build_cayley_tensor(cls):
         """
-        Construye el hiper-cubo de coeficientes multiplicativos [16, 16, 16].
-        C_{ijk} dicta cómo el grado 'i' multiplicado por el grado 'j' contribuye al grado 'k'.
+        Construye automáticamente la Tabla de Cayley [16, 16, 16] para Cl(1,3)
+        utilizando manipulación de bits (Grassmann-Cayley algebra mapping).
         """
-        # Inicializamos en ceros. (El llenado con la firma +, -, -, - lo haremos programáticamente)
+        # Tensor 16x16x16 inicializado en ceros
         T = torch.zeros((16, 16, 16), dtype=torch.float32)
         
-        # Regla trivial (placeholder): escalar * escalar = escalar
-        T[0, 0, 0] = 1.0 
+        # Firma métrica de Hestenes (+, -, -, -)
+        # Bit 0 (gamma_0) -> +1
+        # Bit 1 (gamma_1) -> -1
+        # Bit 2 (gamma_2) -> -1
+        # Bit 3 (gamma_3) -> -1
+        metric = [1, -1, -1, -1]
         
+        # Iterar sobre las 16 bases de i y las 16 bases de j
+        for i in range(16):
+            for j in range(16):
+                # 1. El índice resultante es el XOR de los bits base
+                k = i ^ j
+                
+                sign = 1
+                
+                # 2. Métrica (Aniquilación de cuadrados)
+                # Encontramos los vectores que chocan consigo mismos (overlap)
+                overlap = i & j
+                for bit in range(4):
+                    if overlap & (1 << bit):
+                        sign *= metric[bit]
+                        
+                # 3. Anti-conmutatividad (Permutaciones espaciales)
+                # Contamos cuántos saltos debe dar cada vector en 'j' para pasar a 
+                # través de los vectores de 'i' hasta su posición lexicográfica correcta.
+                swaps = 0
+                for bit_j in range(4):
+                    if j & (1 << bit_j):
+                        # Revisar bits en 'i' que estén a la izquierda (mayor peso)
+                        for bit_i in range(bit_j + 1, 4):
+                            if i & (1 << bit_i):
+                                swaps += 1
+                                
+                if swaps % 2 != 0:
+                    sign *= -1
+                    
+                # 4. Inyectar el escalar resultante en la coordenada del hipercubo
+                T[i, j, k] = float(sign)
+                
         return T
-
-    # --- SOBRECARGA DE OPERADORES MÁGICOS ---
 
     def __mul__(self, other):
         """
