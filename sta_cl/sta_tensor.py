@@ -38,47 +38,6 @@ class STATensor:
             STATensor._cayley_table = self._build_cayley_tensor().to(self.device)
 
     @classmethod
-    def vector(cls, t, x, y, z, device=None):
-        """
-        Crea un Cuadrivector espacio-temporal: V = t*g0 + x*g1 + y*g2 + z*g3.
-        Soporta escalares sueltos o tensores 1D para procesamiento por lotes (batches).
-        """
-        # Convertir a tensores si son escalares para asegurar compatibilidad
-        t = torch.as_tensor(t, dtype=torch.float32)
-        x = torch.as_tensor(x, dtype=torch.float32)
-        y = torch.as_tensor(y, dtype=torch.float32)
-        z = torch.as_tensor(z, dtype=torch.float32)
-        
-        # Determinar el tamaño del lote (batch size)
-        batch_size = max(t.numel(), x.numel(), y.numel(), z.numel())
-        data = torch.zeros((batch_size, 16), dtype=torch.float32, device=device)
-        
-        data[:, 1] = t
-        data[:, 2] = x
-        data[:, 3] = y
-        data[:, 4] = z
-        return cls(data, device=device)
-
-    @classmethod
-    def bivector_pauli(cls, bx, by, bz, device=None):
-        """
-        Crea un Bivector Espacial Puro (Álgebra de Pauli 3D / Campo Magnético).
-        Representa los planos g1^g2, g2^g3, g3^g1.
-        """
-        bx = torch.as_tensor(bx, dtype=torch.float32)
-        by = torch.as_tensor(by, dtype=torch.float32)
-        bz = torch.as_tensor(bz, dtype=torch.float32)
-        
-        batch_size = max(bx.numel(), by.numel(), bz.numel())
-        data = torch.zeros((batch_size, 16), dtype=torch.float32, device=device)
-        
-        # Índices exactos de los bivectores espaciales en la base de 16D
-        data[:, 8] = bx  # eej. gamma_1 * gamma_2
-        data[:, 9] = by  # eej. gamma_2 * gamma_3
-        data[:, 10] = bz # eej. gamma_3 * gamma_1
-        return cls(data, device=device)
-
-    @classmethod
     def _build_cayley_tensor(cls):
         """
         Construye automáticamente la Tabla de Cayley [16, 16, 16] para Cl(1,3)
@@ -127,6 +86,47 @@ class STATensor:
                 T[i, j, k] = float(sign)
                 
         return T
+
+    @classmethod
+    def vector(cls, t, x, y, z, device=None):
+        """
+        Crea un Cuadrivector espacio-temporal: V = t*g0 + x*g1 + y*g2 + z*g3.
+        Índices de Grassmann: g0=1 (2^0), g1=2 (2^1), g2=4 (2^2), g3=8 (2^3).
+        """
+        t = torch.as_tensor(t, dtype=torch.float32)
+        x = torch.as_tensor(x, dtype=torch.float32)
+        y = torch.as_tensor(y, dtype=torch.float32)
+        z = torch.as_tensor(z, dtype=torch.float32)
+        
+        batch_size = max(t.numel(), x.numel(), y.numel(), z.numel())
+        data = torch.zeros((batch_size, 16), dtype=torch.float32, device=device)
+        
+        data[:, 1] = t  # gamma_0
+        data[:, 2] = x  # gamma_1
+        data[:, 4] = y  # gamma_2
+        data[:, 8] = z  # gamma_3
+        return cls(data, device=device)
+
+    @classmethod
+    def bivector_pauli(cls, bx, by, bz, device=None):
+        """
+        Crea un Bivector Espacial Puro (Álgebra de Pauli 3D / Campo Magnético).
+        Índices de Grassmann (XOR): 
+        g1^g2 = 2 XOR 4 = 6
+        g2^g3 = 4 XOR 8 = 12
+        g3^g1 = 8 XOR 2 = 10
+        """
+        bx = torch.as_tensor(bx, dtype=torch.float32)
+        by = torch.as_tensor(by, dtype=torch.float32)
+        bz = torch.as_tensor(bz, dtype=torch.float32)
+        
+        batch_size = max(bx.numel(), by.numel(), bz.numel())
+        data = torch.zeros((batch_size, 16), dtype=torch.float32, device=device)
+        
+        data[:, 6] = bx   # g1^g2
+        data[:, 12] = by  # g2^g3
+        data[:, 10] = bz  # g3^g1
+        return cls(data, device=device)
 
     def __mul__(self, other):
         """
