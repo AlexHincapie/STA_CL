@@ -159,7 +159,7 @@ class STATensor:
         return cls(data, device=dev, dtype=dtype)
 
     # ==========================================
-    # ÁLGEBRA GEOMÉTRICA Y OPERADORES MÁGICOS
+    # ÁLGEBRA GEOMÉTRICA Y OPERADORES
     # ==========================================
 
     def __mul__(self, other):
