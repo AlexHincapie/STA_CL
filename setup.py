@@ -8,7 +8,7 @@ setup(
     name="sta_cl",
     version="1.2.0",
     author="Dane Alexander Hincapié Arango",
-    author_email="dane.hincapie@nabucod.com",
+    author_email="danehincapie@itm.edu.co, dane.hincapie@udea.edu.co, alexander.hincapie.arango@gmail.com",
     description="Spacetime Algebra Cl(1,3) library in PyTorch with Grassmannian projections and Lie-group rotor integrators",
     long_description=long_description,
     long_description_content_type="text/markdown",
