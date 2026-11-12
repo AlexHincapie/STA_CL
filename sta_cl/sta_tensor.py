@@ -109,3 +109,74 @@ class STATensor:
             term = term * self * (1.0 / i)
             res = res + term
         return res
+
+    def project_grassmannian(self, mode='hopf_fiber', target_grade=2, reference_idx=1):
+        """
+        Proyectador Topológico al Grassmanniano Orientado y Variedades Espinoriales en Cl(1,3).
+        
+        Parámetros:
+        - mode: 
+            'hopf_fiber': Mapea funciones ondulatorias (espinores/rotores) al espacio proyectivo
+                          mediante la acción bilineal (psi * K * ~psi) y pliega al hemisferio positivo.
+            'spinor_manifold': Normaliza ondas de Dirac-Hestenes usando el invariante quiral
+                               completo rho = sqrt(<psi ~psi>_0^2 + <psi ~psi>_4^2).
+            'plucker_blade': Proyecta un subespacio de grado k sobre la esfera unitaria positiva S^n,
+                             seguro contra conos de luz nulos (E^2 - B^2 = 0).
+        - target_grade: Grado del subespacio a aislar en modo 'plucker_blade' (1=rectas, 2=planos/ondas EM).
+        - reference_idx: Índice de la base de Hestenes para la fibra de Hopf (1=g0 corriente, 6=g1^g2 espín).
+        """
+        eps = 1e-8
+        rev = ~self
+
+        if mode == 'spinor_manifold':
+            # 1. Filtrar ruido numérico aislando la subálgebra par Cl+(1,3): grados 0, 2, 4
+            even_mask = torch.zeros(16, dtype=torch.float32, device=self.device)
+            even_mask[[0, 3, 5, 6, 9, 10, 12, 15]] = 1.0
+            psi_even = STATensor(self.data * even_mask, device=self.device)
+            
+            # 2. Producto de norma espinorial: psi * ~psi = escalar (idx 0) + pseudoescalar (idx 15)
+            norm_multivector = psi_even * (~psi_even)
+            scalar_part = norm_multivector.data[:, 0:1]
+            pseudo_part = norm_multivector.data[:, 15:16]
+            
+            # 3. Invariante de Hestenes-Yvon-Takabayashi: rho = sqrt(S^2 + P^2)
+            rho = torch.sqrt(scalar_part**2 + pseudo_part**2 + eps)
+            return STATensor(psi_even.data / torch.sqrt(rho), device=self.device)
+
+        elif mode == 'hopf_fiber':
+            # Construye el elemento base K (por defecto gamma_0 en índice 1, o plano de espín en índice 6)
+            K_data = torch.zeros((1, 16), dtype=torch.float32, device=self.device)
+            K_data[:, reference_idx] = 1.0
+            K = STATensor(K_data, device=self.device)
+            
+            # Proyección bilineal de la onda sobre el subespacio observable: P = psi * K * ~psi
+            projected = self * K * rev
+            
+            # Normalización Euclidiana sobre la variedad proyectiva para evitar singularidades nulas
+            norm_euclid = torch.norm(projected.data, p=2, dim=-1, keepdim=True) + eps
+            unit_proj = projected.data / norm_euclid
+            
+            # Plegado al Hemisferio Positivo del Grassmanniano (identificación antipodal de rectas/ondas)
+            # Toma la componente de referencia dominante y fuerza su signo a ser >= 0
+            hemisphere_sign = torch.sign(unit_proj[:, reference_idx:reference_idx+1])
+            hemisphere_sign = torch.where(hemisphere_sign == 0, torch.ones_like(hemisphere_sign), hemisphere_sign)
+            
+            return STATensor(unit_proj * hemisphere_sign, device=self.device)
+
+        elif mode == 'plucker_blade':
+            # Aísla el grado geométrico deseado (ej. grado 2 para bivectores de onda)
+            blade = self.grade_project(target_grade)
+            
+            # Norma en S^15 para garantizar estabilidad incluso en ondas electromagnéticas nulas
+            norm_blade = torch.norm(blade.data, p=2, dim=-1, keepdim=True) + eps
+            unit_blade = blade.data / norm_blade
+            
+            # Orientación canónica en el hemisferio positivo según la primera componente no nula del grado
+            max_idx = torch.argmax(torch.abs(unit_blade), dim=-1, keepdim=True)
+            dominant_val = torch.gather(unit_blade, 1, max_idx)
+            sign_orient = torch.where(dominant_val >= 0, torch.ones_like(dominant_val), -torch.ones_like(dominant_val))
+            
+            return STATensor(unit_blade * sign_orient, device=self.device)
+
+        else:
+            raise ValueError(f"Modo Grassmanniano '{mode}' no reconocido.")
