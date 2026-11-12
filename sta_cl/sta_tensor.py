@@ -266,12 +266,13 @@ class STATensor:
     # DINÁMICA, CÁLCULO TOPOLÓGICO Y GRASSMANNIANO
     # ==========================================
 
-    def exp(self, order=8, squarings=4):
+    def exp(self, order=8, squarings=4, normalize_rotor=True):
         """
-        Exponenciación Tensorial con Scaling & Squaring en GPU:
+        Exponenciación Tensorial con Scaling & Squaring + Proyección Simpléctica a Spin+(1,3):
         1. Reduce la norma dividiendo por 2^squarings: X_scaled = X / 16.
         2. Evalúa Serie de Taylor de orden 8 en zona de convergencia absoluta.
-        3. Eleva al cuadrado 'squarings' veces mediante einsum (sin warp divergence).
+        3. Eleva al cuadrado 'squarings' veces mediante einsum.
+        4. Si normalize_rotor=True, elimina la deriva de float32 proyectando R*~R = 1.
         """
         scale = float(2 ** squarings)
         x_scaled = self * (1.0 / scale)
@@ -286,6 +287,14 @@ class STATensor:
             
         for _ in range(squarings):
             res = res * res
+
+        if normalize_rotor:
+            # Proyección exacta al grupo Spin+(1,3) usando el inverso de la raíz espinorial
+            norm_sq = (res * (~res)).data[:, 0:1]
+            valid = norm_sq > 1e-7
+            inv_norm = torch.where(valid, torch.rsqrt(torch.abs(norm_sq) + 1e-12), torch.ones_like(norm_sq))
+            res = STATensor(res.data * inv_norm, device=self.device, dtype=self.dtype)
+
         return res
 
     @staticmethod
