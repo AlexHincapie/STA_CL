@@ -289,10 +289,10 @@ class STATensor:
             res = res * res
 
         if normalize_rotor:
-            # Proyección exacta al grupo Spin+(1,3) usando el inverso de la raíz espinorial
             norm_sq = (res * (~res)).data[:, 0:1]
-            valid = norm_sq > 1e-7
-            inv_norm = torch.where(valid, torch.rsqrt(torch.abs(norm_sq) + 1e-12), torch.ones_like(norm_sq))
+            valid = torch.abs(norm_sq) > 1e-12
+            safe_norm = torch.clamp(torch.abs(norm_sq), min=1e-30)
+            inv_norm = torch.where(valid, torch.rsqrt(safe_norm), torch.ones_like(norm_sq))
             res = STATensor(res.data * inv_norm, device=self.device, dtype=self.dtype)
 
         return res
